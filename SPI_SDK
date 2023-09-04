@@ -1,0 +1,193 @@
+#include<stdio.h>
+#include<string.h>
+#include<stdlib.h>
+
+#include "ql_api_osi.h"
+#include "ql_api_spi_nor_flash.h"
+#include "ql_log.h"
+#include "spi_nor_flash_demo.h"
+#include "ql_gpio.h"
+
+#define QL_SPI_NOR_LOG_LEVEL       	        QL_LOG_LEVEL_INFO
+#define QL_SPI_NOR_LOG(msg, ...)			QL_LOG(QL_SPI_NOR_LOG_LEVEL, "ql_SPI_NOR_DEMO", msg, ##__VA_ARGS__)
+#define QL_SPI_NOR_LOG_PUSH(msg, ...)	    QL_LOG_PUSH("ql_SPI_NOR_DEMO", msg, ##__VA_ARGS__)
+
+#define QL_CUR_SPI_PORT             QL_SPI_PORT1
+#define QL_CUR_SPI_CS_PIN           QL_CUR_SPI1_CS_PIN
+#define QL_CUR_SPI_CS_FUNC          QL_CUR_SPI1_CS_FUNC
+#define QL_CUR_SPI_CLK_PIN          QL_CUR_SPI1_CLK_PIN
+#define QL_CUR_SPI_CLK_FUNC         QL_CUR_SPI1_CLK_FUNC
+#define QL_CUR_SPI_DO_PIN           QL_CUR_SPI1_DO_PIN
+#define QL_CUR_SPI_DO_FUNC          QL_CUR_SPI1_DO_FUNC
+#define QL_CUR_SPI_DI_PIN           QL_CUR_SPI1_DI_PIN
+#define QL_CUR_SPI_DI_FUNC          QL_CUR_SPI1_DI_FUNC
+
+ql_task_t spi_nor_flash_demo_task = NULL;
+char packet1[] = "FUL86671806569960525L1230823003935018.570059N073.911568E404x90182f238416647000.14189.6521012900SVENID1CDAC10000000KL01AA55550600.8101AIRTEL238416647182f81000000000000000000000000000000000000000000000000.0003.5O100000000000011847";
+char packet2[] = "NRM86671806569960501L1230823004235018.570049N073.911560E404x90182f238416647000.13189.6522013000S0599.96AIRTEL";
+char header[] = "^+";
+char footer[] = "~-";
+unsigned int writeptr = 0;
+int readptr = 0;
+int rem_bytes = 4096;
+unsigned char *dyndata = NULL;
+ql_errcode_gpio gpio_ret;
+ql_errcode_spi_nor_e ret = 0;
+
+void read_data(){
+   dyndata = malloc(4096);
+   memset(dyndata, 0, 4096);
+
+   ret =  ql_spi_nor_read(QL_CUR_SPI_PORT, dyndata, 0, 4096);
+   
+   if(ret == QL_SPI_FLASH_SUCCESS){
+    QL_SPI_NOR_LOG("Gettinginaddress");
+   }
+   
+   for(int i = 0; i < 4096; i++){
+   QL_SPI_NOR_LOG("Pointer %d: %c", i, dyndata[i]);
+   }
+   
+   free(dyndata);
+}
+
+void erase_sector(int address){
+    int secn = address / 4096; // Calculate the number of sector erased
+    ql_spi_nor_erase_sector(QL_CUR_SPI_PORT, address); 
+    QL_SPI_NOR_LOG("Sector number %d erased", secn);
+}
+
+void write_data(int address, char* data, int length){
+    
+    dyndata = malloc(length + 1); //cal for null pointer
+    memset(dyndata, 0, length + 1); //Initialize the array
+
+
+    if(address == 0){
+      erase_sector(address);
+    }
+
+    if(rem_bytes < length + 4){ //if remaining bytes in sector are less than length of data shift to next sector
+        address += rem_bytes;
+        erase_sector(address);
+        rem_bytes = 4096;
+    }
+        dyndata[0] = header[0];
+        dyndata[1] = header[1];
+        ql_spi_nor_write(QL_CUR_SPI_PORT, dyndata, address, 2); //add header
+        address += 2;
+        memset(dyndata, 0, length + 1);
+        
+        for(int i = 0; i < length; i++){
+            dyndata[i] = data[i];
+        }
+        ret = ql_spi_nor_write(QL_CUR_SPI_PORT, dyndata, address, length); //add data packet
+        address += length;
+        memset(dyndata, 0, length + 1);
+
+        dyndata[0] = footer[0];
+        dyndata[1] = footer[1];
+        ql_spi_nor_write(QL_CUR_SPI_PORT, dyndata, address, 2);//add footer
+        address += 2;
+        memset(dyndata, 0, length + 1);
+        
+        if(ret == QL_SPI_FLASH_SUCCESS){
+        QL_SPI_NOR_LOG("Address after write %d", address);
+        }
+
+        rem_bytes -= length + 4;
+        writeptr = address;
+        readptr = writeptr;
+        free(dyndata);
+}
+
+static void ql_spi_nor_flash_demo_task_pthread(void *ctx){
+    QlOSStatus err = 0;
+      
+    
+    if (QL_CUR_SPI_CS_PIN == QUEC_PIN_NONE || QL_CUR_SPI_CS_PIN == QUEC_PIN_NONE || \
+        QL_CUR_SPI_DO_PIN == QUEC_PIN_NONE || QL_CUR_SPI_DI_PIN == QUEC_PIN_NONE)
+    {
+        QL_SPI_NOR_LOG("pin err");
+        goto QL_SPI_TASK_EXIT;
+    }
+    else{
+        QL_SPI_NOR_LOG("Success");
+    }
+
+    gpio_ret = ql_pin_set_func(QL_CUR_SPI_CS_PIN, QL_CUR_SPI_CS_FUNC);
+    if (gpio_ret != QL_GPIO_SUCCESS)
+    {
+        QL_SPI_NOR_LOG("set pin err");
+        goto QL_SPI_TASK_EXIT;
+    }else{
+        QL_SPI_NOR_LOG("Success");
+    }
+
+    gpio_ret = ql_pin_set_func(QL_CUR_SPI_CLK_PIN, QL_CUR_SPI_CLK_FUNC);
+    if (gpio_ret != QL_GPIO_SUCCESS)
+    {
+        QL_SPI_NOR_LOG("set pin err");
+        goto QL_SPI_TASK_EXIT;
+    }else{
+        QL_SPI_NOR_LOG("Success");
+    }
+
+    gpio_ret = ql_pin_set_func(QL_CUR_SPI_DO_PIN, QL_CUR_SPI_DO_FUNC);
+    if (gpio_ret != QL_GPIO_SUCCESS)
+    {
+        QL_SPI_NOR_LOG("set pin err");
+        goto QL_SPI_TASK_EXIT;
+    }else{
+        QL_SPI_NOR_LOG("Success");
+    }
+
+    gpio_ret = ql_pin_set_func(QL_CUR_SPI_DI_PIN, QL_CUR_SPI_DI_FUNC);
+    if (gpio_ret != QL_GPIO_SUCCESS)
+    {
+        QL_SPI_NOR_LOG("set pin err");
+        goto QL_SPI_TASK_EXIT;
+    }else{
+        QL_SPI_NOR_LOG("Success");
+    }
+
+    ql_spi_nor_init(QL_SPI_PORT1, QL_SPI_CLK_25MHZ);
+
+    int lengthp1 = strlen(packet1);
+    int lengthp2 = strlen(packet2);
+    
+    for(int i = 0; i < 5; i++){
+    write_data(writeptr, packet1, lengthp1);
+    write_data(writeptr, packet2, lengthp2);
+    ql_rtos_task_sleep_ms(100);
+    }
+
+    read_data();
+  
+    QL_SPI_NOR_LOG("Task delete");
+
+    ql_rtos_task_delete(NULL);
+
+    QL_SPI_TASK_EXIT:
+    QL_SPI_NOR_LOG("ql_rtos_task_delete");
+	err = ql_rtos_task_delete(NULL);
+	if(err != QL_OSI_SUCCESS)
+	{
+		QL_SPI_NOR_LOG("task deleted failed");
+	}
+
+}
+
+QlOSStatus ql_spi_nor_flash_demo_init(void){
+    QlOSStatus err = QL_OSI_SUCCESS;
+
+    QL_SPI_NOR_LOG("Enter ql_spi_nor_flash_demo_init");
+	err = ql_rtos_task_create(&spi_nor_flash_demo_task, SPI_NOR_FLASH_DEMO_TASK_STACK_SIZE, SPI_NOR_FLASH_DEMO_TASK_PRIO, "ql_spi_nor", ql_spi_nor_flash_demo_task_pthread, NULL, SPI_NOR_FLASH_DEMO_TASK_EVENT_CNT);
+	if(err != QL_OSI_SUCCESS)
+	{
+		QL_SPI_NOR_LOG("demo_task created failed");
+        return err;
+	}
+
+    return err;   
+}
