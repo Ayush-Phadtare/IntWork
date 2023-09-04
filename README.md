@@ -1,1 +1,2 @@
 Write Data file is basic C code using SPI to transfer any amount of data using Winbond W25Q256F IC. Drawback right now is it doesnt compensate for empty spaces in a page. 
+Currently working on LIFO based SPI transfer and reading of data. Each packet has ^+ as header and ~- as footer. The data while reading is first transferred page by page into a dynamic array and then parsed for packets using header and footer to locate.
