@@ -1,0 +1,149 @@
+/////WORKING ON READ_DATA
+
+#include<stdio.h>
+#include<string.h>
+#include<stdlib.h>
+
+#define MEMORY 0x01FFFFFF
+
+char vm[MEMORY];
+
+char packet1[] = "FUL86671806569960525L1230823003935018.570059N073.911568E404x90182f238416647000.14189.6521012900SVENID1CDAC10000000KL01AA55550600.8101AIRTEL238416647182f81000000000000000000000000000000000000000000000000.0003.5O100000000000011847";
+char packet2[] = "NRM86671806569960501L1230823004235018.570049N073.911560E404x90182f238416647000.13189.6522013000S0599.96AIRTEL";
+
+char *header = "^+";
+char *footer = "~-";
+int writeptr = 0;
+unsigned int readptr = 0;
+int rem_bytes = 4096;
+char *dataarr = NULL;
+char *readarr = NULL;
+int headerbool = 0;
+int footerbool = 0;
+int pagenums;
+
+
+void read_data(int pagenums){
+for(int j = 0; j < pagenums; j++){
+  headerbool = 0;
+  footerbool = 0;
+  printf("\nWriting Data Chunk\n");
+  int headerpos = 0;
+  int footerpos = 0;
+  int pagewr = 0;
+  int datalength;
+  if(readptr % 256 == 0){
+    readptr -=256;
+  }else{
+    readptr -=  readptr % 256;
+  }
+
+  readarr = malloc(4096);
+  
+  while(headerbool == 0 && footerbool == 0){
+   printf("Data Transfer\n");
+   for(int i = 0; i < 256; i++){
+       readarr[i] = vm[readptr + i];
+  }
+  pagewr++;
+  readptr -= 256;
+  int num = 0;
+   while(footerbool == 0 || num < 256){
+       if(readarr[num] == footer[0]){
+        if(readarr[num + 1] == footer[1]){
+            printf("Got Footer %d\n", num);
+            footerbool = 1;
+            footerpos = num ;
+        }
+       }
+       num++;
+   }
+   num = 0;
+   while(headerbool == 0 || num < 256){
+    if(readarr[num] == header[0]){
+        if(readarr[num + 1] == header[1]){
+            headerbool = 1;
+            headerpos = num + 2;
+            printf("Got Header\n");
+            readptr = num - 1;
+        }
+    }
+    num++;
+   }
+   if(headerbool == 0 || footerbool == 0){
+    for(int i = 0; i < pagewr * 256; i++){
+        printf("Array Readjusted\n");
+        readarr[i] = readarr[256 + i];
+    }
+    pagewr++;
+   }
+  }
+  datalength = footerpos - headerpos;
+  printf("Length of Data %d\n", datalength);
+  for(int i = 0; i < datalength; i++){
+    printf("%c", readarr[headerpos + i]);
+  }
+  printf("\n\n");
+
+  free(readarr);
+}
+}
+
+void erase_sector(int address){
+    int secn = address / 4096;
+    for(int i = 0; i < 4096; i++){
+        vm[address + i] = '0';
+    }
+    //printf("Sector number %d erased\n", secn);
+}
+
+void write_data(int address, char *data, int length){
+    dataarr = malloc(length + 1);
+    
+    if(address == 0){
+    erase_sector(address);
+   }
+   
+   if(rem_bytes < length + 4){//Calculate to reset starting pos
+      address += rem_bytes;
+      erase_sector(address);
+      rem_bytes = 4096;
+   }
+   
+    vm[address] = header[0];
+    vm[address + 1] = header[1];
+    address +=2;
+    
+    for(int i = 0; i < length; i++){
+        dataarr[i] = data[i];
+        vm[address + i] = dataarr[i];
+        //printf("%d : %c\n", address + i, dataarr[i] );
+    }
+    address += length;
+    
+    vm[address] = footer[0];
+    vm[address + 1] = footer[1];
+    address += 2;
+    
+    rem_bytes -= length + 4;
+    writeptr = address;
+    readptr = writeptr;
+    free(dataarr);
+   // printf("\n\nOne Time Done\n\n");
+}
+
+int main(){
+   int lengthp1 = strlen(packet1);
+   int lengthp2 = strlen(packet2);
+   
+   for(int i = 0; i < 10; i++){
+    write_data(writeptr, packet1, lengthp1);
+    write_data(writeptr, packet2, lengthp2);
+   }
+
+   //printf("\nHow Many Data Packets to read?\n");
+   //scanf("%d", &pagenums);
+   
+   readptr--;
+   read_data(3);
+}
