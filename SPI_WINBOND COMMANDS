@@ -17,17 +17,13 @@
 
 ql_task_t spi_demo_task = NULL;
 int spi_power_lock = 0;
-int WEL = 0;
-unsigned int writeptr;
-char *header = "^+";
-char *footer = "~-";
+unsigned char *dataarr;
+unsigned char *readarr = NULL;
 int writeptr = 0;
 unsigned int readptr = 0;
-int rem_bytes = 4096;
-int headerbool = 0;
-int footerbool = 0;
+char *header = "^+";
+char *footer = "~-";
 int pagenums;
-
 
 #define QL_TYPE_SHIFT_8             8
 
@@ -45,7 +41,6 @@ int pagenums;
 
 void write_enable(){//Use WR before ERASE or PAGE Program Operations
 
-    ql_errcode_spi_e ret = 0;
     unsigned char *outdata;
     unsigned short outlen;
 
@@ -55,52 +50,30 @@ void write_enable(){//Use WR before ERASE or PAGE Program Operations
     *outdata = 0x06;
 
     ql_spi_cs_low(QL_CUR_SPI_PORT);
-    ret = ql_spi_write(QL_CUR_SPI_PORT, outdata, outlen);
+    ql_spi_write(QL_CUR_SPI_PORT, outdata, outlen);
+    ql_rtos_task_sleep_ms(100);
     ql_spi_cs_high(QL_CUR_SPI_PORT);
-    
-    if(ret == QL_SPI_SUCCESS){               
-        QL_SPI_DEMO_LOG("Write enable successfull");
-    }
 
     free(outdata);
 }
 
-void read_WEL(){ //Read BUSY bit
-
-    ql_errcode_spi_e ret;
+void write_disable(){
+    
     unsigned char *outdata;
     unsigned short outlen;
-    unsigned char *indata;
-    unsigned short inlen;
 
     outlen = 1;
-    inlen = 1;
 
     outdata = (unsigned char*)malloc(sizeof(unsigned char) * outlen);
-    indata = (unsigned char*)malloc(sizeof(unsigned char) * inlen);
-
-    *outdata = 0x05;
+    *outdata = 0x04;
 
     ql_spi_cs_low(QL_CUR_SPI_PORT);
-    ret = ql_spi_read_follow_write(QL_CUR_SPI_PORT, outdata, outlen, indata, inlen);
+    ql_spi_write(QL_CUR_SPI_PORT, outdata, outlen);
+    ql_rtos_task_sleep_ms(100);
     ql_spi_cs_high(QL_CUR_SPI_PORT);
 
-    char status_byte = indata[0];
-
-    int status_bit = (status_byte & 0x01) != 0; //BITWISE operation with busy bit
-
-    if(status_bit == 0){ //Update global variable
-        WEL = 0;
-    }else if(status_bit == 1){
-        WEL = 1;
-    }
-
-    if(ret == QL_SPI_SUCCESS){               
-        QL_SPI_DEMO_LOG("WEL Successful");
-    }
-
-    free(indata);
     free(outdata);
+
 }
 
 unsigned char* change_address(unsigned char* outdata, uint32_t addr){ //Change the received uint address to hex
@@ -116,111 +89,140 @@ unsigned char* change_address(unsigned char* outdata, uint32_t addr){ //Change t
     
 }
 
-void sector_erase(uint32_t address){ ///Erase one sector of 4kb
+void sector_erase(uint32_t address){
     ql_errcode_spi_e ret;
     unsigned char *outdata;
     unsigned short outlen;
 
-    outlen = 5;
+    outlen = 4;
 
-    outdata = (unsigned char*)malloc(sizeof(unsigned char) * outlen);
+    outdata = (unsigned char*)malloc(outlen);
 
     *outdata = 0x20;
 
     change_address(outdata, address);
+    
+    ql_rtos_task_sleep_ms(100);
+    write_disable();
+    ql_rtos_task_sleep_ms(100);
+    write_enable();
 
-    read_WEL(); //check busy bit
-    if(WEL == 1){
-        while(WEL == 1){
-            read_WEL();
-        }
-    }
-    write_enable(); //Wait till BUSY bit is 0 and then turn on latch
     ql_spi_cs_low(QL_CUR_SPI_PORT);
     ret = ql_spi_write(QL_CUR_SPI_PORT, outdata, outlen);
+    ql_rtos_task_sleep_ms(100);
     ql_spi_cs_high(QL_CUR_SPI_PORT);
-    
-    if(ret == QL_SPI_SUCCESS){               
-        QL_SPI_DEMO_LOG("Sector Erase successfull");
+    ql_rtos_task_sleep_ms(400);
+
+    if(ret != QL_SPI_SUCCESS){
+        QL_SPI_DEMO_LOG("RET Sector Erase: %d", ret);
+    }else{
+        QL_SPI_DEMO_LOG("Sector Erase Successful");
     }
 
     free(outdata);
 }
 
-void page_program(uint32_t address, char *datapack){ //write data, needs previously erased locations
-
+void page_program(uint32_t address, char *datapack){
     ql_errcode_spi_e ret;
-    unsigned char *outdata;
-    unsigned int outlen;
-    unsigned int packlen;
-    packlen = strlen(datapack);
-    outlen = packlen + 5;
+    unsigned int packlen = strlen(datapack);
+    unsigned int datalen = packlen + 8;
+    int locptr;
 
-    outdata = (unsigned char*)malloc(sizeof(unsigned char) * outlen);
-
-    *outdata = 0x02;
-
-    change_address(outdata, address);
-
-    for(int i = 4; i < outlen; i++){
-        *(outdata + i) = datapack[i-4];
+    if(address % 4096 == 0){
+        sector_erase(address);
+        ql_rtos_task_sleep_s(2);
     }
 
-    read_WEL(); //check busy bit
-    if(WEL == 1){
-        while(WEL == 1){
-            read_WEL();
-        }
+    dataarr = (unsigned char*)malloc(datalen);
+    *dataarr = 0x02;
+
+    change_address(dataarr, address);
+
+    locptr = 4;
+
+    dataarr[locptr] = header[0];
+    dataarr[locptr + 1] = header[1];
+    locptr += 2;
+
+    for(int i = 0; i < packlen; i++){
+       dataarr[i + 6] = datapack[i];
     }
-    write_enable(); //Wait till BUSY bit is 0 and then turn on latch
+    locptr += packlen;
+
+    dataarr[locptr] = footer[0];
+    dataarr[locptr + 1] = footer[1];
+    locptr += 2;
+
+    ql_rtos_task_sleep_ms(100);
+    write_disable();
+    ql_rtos_task_sleep_ms(100);
+    write_enable();
+
     ql_spi_cs_low(QL_CUR_SPI_PORT);
-    ql_rtos_task_sleep_s(3);
-    ret = ql_spi_write(QL_CUR_SPI_PORT, outdata, outlen);
-    ql_rtos_task_sleep_s(3);
+    ret = ql_spi_write(QL_CUR_SPI_PORT, dataarr, datalen);
     ql_spi_cs_high(QL_CUR_SPI_PORT);
+    ql_rtos_task_sleep_ms(1000);
 
-    if(ret == QL_SPI_SUCCESS){               
-        QL_SPI_DEMO_LOG("Page written");
+    if(ret != QL_SPI_SUCCESS){
+        QL_SPI_DEMO_LOG("RET Page Program: %d", ret);
+    }else{
+        QL_SPI_DEMO_LOG("Page Program Successful");
     }
 
-    free(outdata);
+    writeptr += locptr - 4;
+    readptr = writeptr; 
+
+    free(dataarr);
 }
 
-void read_page(uint32_t address, unsigned int inlen){ //Read data from given address
-    ql_errcode_spi_e ret = 0;
-    unsigned char *outdata;
-    unsigned short outlen;
-    unsigned char *indata;
-    
-
-    outlen = 5;
-   
-    indata = (unsigned char*)malloc(256);
-    outdata = (unsigned char*)malloc(sizeof(unsigned char) * outlen);
-    *outdata = 0x03;
-
-    change_address(outdata, address);
-
-    ql_spi_cs_low(QL_CUR_SPI_PORT);
-    ret = ql_spi_read_follow_write(QL_CUR_SPI_PORT, outdata, outlen, indata, inlen);
-    ql_spi_cs_high(QL_CUR_SPI_PORT);
-    
-    if(ret == QL_SPI_SUCCESS){               
-        QL_SPI_DEMO_LOG("Address Sent");
+void read_page(int pagenums){
+    if(readptr % 256 == 0){
+        readptr -=256;
+    }else{
+        readptr -=  readptr % 256;
     }
+    for(int j = 0; j < pagenums; j++){
+        ql_errcode_spi_e ret ;
+        unsigned char *outdata;
+        unsigned int outlen;   
+        outlen = 4;
 
-    for(int i = 0; i < 256; i++){
-        QL_SPI_DEMO_LOG("%d: %c", i, indata[i]);
-        ql_rtos_task_sleep_ms(100);
+        outdata = (unsigned char*)malloc(5);
+        *outdata = 0x03;  
+
+        readarr = (unsigned char*)malloc(2560);
+
+        change_address(outdata, readptr); 
+
+        ql_rtos_task_sleep_s(1);
+        ret = ql_spi_read_follow_write(QL_CUR_SPI_PORT, outdata, outlen, readarr, 256);
+        ql_rtos_task_sleep_s(2);
+
+        if(ret != QL_SPI_SUCCESS){
+            QL_SPI_DEMO_LOG("RET Read: %d", ret);
+        }else{
+            QL_SPI_DEMO_LOG("Read Page Successful %d", j);
+        }
+        
+        QL_SPI_DEMO_LOG("Value of Array: %s", readarr);
+        
+        for(int i = 0; i < 256; i++){
+            QL_SPI_DEMO_LOG("%d: %c", readptr + i, readarr[i]);
+            ql_rtos_task_sleep_ms(10);
+        }  
+        
+        readptr -= 256; 
+        
+        free(outdata);
+        free(readarr);
     }
-
-    free(outdata);
+    QL_SPI_DEMO_LOG("ALL PACKETS READ");
 }
 
 static void ql_spi_demo_task_pthread(void *ctx){
     char *packet1 = "FUL86671806569960525L1230823003935018.570059N073.911568E404x90182f238416647000.14189.6521012900SVENID1CDAC10000000KL01AA55550600.8101AIRTEL238416647182f81000000000000000000000000000000000000000000000000.0003.5O100000000000011847";
-   /////PIN CODE
-   QlOSStatus err = 0;
+    char *packet2 = "NRM86671806569960501L1230823004235018.570049N073.911560E404x90182f238416647000.13189.6522013000S0599.96AIRTEL";
+    QlOSStatus err = 0;
     ql_errcode_gpio ret;
     ql_spi_clk_e spiclk;
     ql_spi_transfer_mode_e transmode;
@@ -262,10 +264,10 @@ static void ql_spi_demo_task_pthread(void *ctx){
     }
    //////PIN END
 
-   spi_config.input_mode = QL_SPI_INPUT_TRUE;
+    spi_config.input_mode = QL_SPI_INPUT_TRUE;
     spi_config.port = QL_CUR_SPI_PORT;
     framesize = 8;
-    transmode = QL_SPI_DMA_POLLING; 
+    transmode = QL_SPI_DIRECT_POLLING; 
     spiclk = QL_SPI_CLK_1_5625MHZ;
     spi_config.spiclk = spiclk;
     spi_config.framesize = framesize;
@@ -280,11 +282,18 @@ static void ql_spi_demo_task_pthread(void *ctx){
     ql_spi_init_ext(spi_config);
 
     ql_rtos_task_sleep_s(5);
-    sector_erase(0);
-    ql_rtos_task_sleep_s(2);
-    page_program(0, packet1);
-    ql_rtos_task_sleep_s(2);
-    read_page(0, 200);
+    QL_SPI_DEMO_LOG("Starting Read Write");
+
+    for(int i = 0; i < 2; i++){
+        page_program(writeptr, packet1);
+        ql_rtos_task_sleep_s(3);
+        QL_SPI_DEMO_LOG("Packet 1 Loop %d done", i);
+        page_program(writeptr, packet2);
+        QL_SPI_DEMO_LOG("Packet 2 Loop %d done", i);
+        ql_rtos_task_sleep_s(3);
+    }
+    read_page(3);
+
     ql_rtos_task_sleep_s(5);
 
     QL_SPI_EXIT:
@@ -294,10 +303,10 @@ static void ql_spi_demo_task_pthread(void *ctx){
 	{
 		QL_SPI_DEMO_LOG("task deleted failed");
 	}
-    //ql_spi_release(QL_CUR_SPI_PORT);
+    ql_spi_release(QL_CUR_SPI_PORT);
 }
 
-QlOSStatus ql_spi_new_init(void)
+QlOSStatus ql_spi_demo_init(void)
 {	
     ql_rtos_task_sleep_s(30);
     QL_SPI_DEMO_LOG("Entering Main Code");
