@@ -17,13 +17,27 @@
 
 ql_task_t spi_demo_task = NULL;
 int spi_power_lock = 0;
-unsigned char *dataarr;
-unsigned char *readarr = NULL;
+
+unsigned char* change_address(unsigned char* outdata, uint32_t addr){ //Change the received uint address to hex
+
+    int shift = 16;
+
+    for(int i = 1; i < 4; i++){
+        *(outdata+i) = (addr>>shift) & 0xFF;
+        shift -= 8;
+    }
+
+    return outdata;
+    
+}
 int writeptr = 0;
+unsigned char *dataarr = NULL;
+unsigned char *readarr = NULL;
 unsigned int readptr = 0;
 char *header = "^+";
 char *footer = "~-";
 int pagenums;
+int addr = 0;
 
 #define QL_TYPE_SHIFT_8             8
 
@@ -76,19 +90,6 @@ void write_disable(){
 
 }
 
-unsigned char* change_address(unsigned char* outdata, uint32_t addr){ //Change the received uint address to hex
-
-    int shift = 16;
-
-    for(int i = 1; i < 4; i++){
-        *(outdata+i) = (addr>>shift) & 0xFF;
-        shift -= 8;
-    }
-
-    return outdata;
-    
-}
-
 void sector_erase(uint32_t address){
     ql_errcode_spi_e ret;
     unsigned char *outdata;
@@ -122,36 +123,13 @@ void sector_erase(uint32_t address){
     free(outdata);
 }
 
-void page_program(uint32_t address, char *datapack){
+void page_program(){
     ql_errcode_spi_e ret;
-    unsigned int packlen = strlen(datapack);
-    unsigned int datalen = packlen + 8;
-    int locptr;
 
-    if(address % 4096 == 0){
-        sector_erase(address);
-        ql_rtos_task_sleep_s(2);
+    for(int i = 0; i < 260 ; i++){
+        QL_SPI_DEMO_LOG("%d: %c", i, dataarr[i]);
+        ql_rtos_task_sleep_ms(10);
     }
-
-    dataarr = (unsigned char*)malloc(datalen);
-    *dataarr = 0x02;
-
-    change_address(dataarr, address);
-
-    locptr = 4;
-
-    dataarr[locptr] = header[0];
-    dataarr[locptr + 1] = header[1];
-    locptr += 2;
-
-    for(int i = 0; i < packlen; i++){
-       dataarr[i + 6] = datapack[i];
-    }
-    locptr += packlen;
-
-    dataarr[locptr] = footer[0];
-    dataarr[locptr + 1] = footer[1];
-    locptr += 2;
 
     ql_rtos_task_sleep_ms(100);
     write_disable();
@@ -159,20 +137,63 @@ void page_program(uint32_t address, char *datapack){
     write_enable();
 
     ql_spi_cs_low(QL_CUR_SPI_PORT);
-    ret = ql_spi_write(QL_CUR_SPI_PORT, dataarr, datalen);
+    ret = ql_spi_write(QL_CUR_SPI_PORT, dataarr, 260);
     ql_spi_cs_high(QL_CUR_SPI_PORT);
     ql_rtos_task_sleep_ms(1000);
 
-    if(ret != QL_SPI_SUCCESS){
+    dataarr = NULL;
+    free(dataarr);
+    dataarr = (unsigned char*)malloc(260);
+    *dataarr = 0x02;
+
+    change_address(dataarr, writeptr);
+    writeptr++;
+    addr = 0;
+    readptr = writeptr;
+
+    if(ret != QL_SPI_SUCCESS){               
         QL_SPI_DEMO_LOG("RET Page Program: %d", ret);
     }else{
         QL_SPI_DEMO_LOG("Page Program Successful");
     }
 
-    writeptr += locptr - 4;
-    readptr = writeptr; 
+    QL_SPI_DEMO_LOG("Ending Address: %d", writeptr);
 
-    free(dataarr);
+}
+
+void write_array(char *datapack){
+    int locptr = 0;
+    unsigned char* temp;
+    unsigned short packlen = strlen(datapack);
+    temp = (unsigned char*)malloc(packlen + 4);
+
+    temp[locptr] = header[0];
+    temp[locptr + 1] = header[1];
+    locptr += 2;
+
+    for(int i = 0; i < packlen; i++){
+       temp[i + 2] = datapack[i];
+    }
+    locptr += packlen;
+
+    temp[locptr] = footer[0];
+    temp[locptr + 1] = footer[1];
+    locptr +=2;
+
+    for(int i = 0; i < packlen + 4; i++){
+        if(writeptr % 256 != 0 || writeptr == 0){
+           dataarr[addr + 4] = temp[i];
+           QL_SPI_DEMO_LOG("Write: %d, Addr: %d, Loop i: %d, temp: %c", writeptr, addr, i, temp[i]);
+           writeptr++;
+           addr++;
+        }else{
+           page_program();
+        }
+    }
+    temp = NULL;
+    free(temp);
+
+    
 }
 
 void read_page(int pagenums){
@@ -187,10 +208,10 @@ void read_page(int pagenums){
         unsigned int outlen;   
         outlen = 4;
 
-        outdata = (unsigned char*)malloc(5);
+        outdata = (unsigned char*)malloc(4);
         *outdata = 0x03;  
 
-        readarr = (unsigned char*)malloc(2560);
+        readarr = (unsigned char*)malloc(256);
 
         change_address(outdata, readptr); 
 
@@ -204,13 +225,14 @@ void read_page(int pagenums){
             QL_SPI_DEMO_LOG("Read Page Successful %d", j);
         }
         
-        QL_SPI_DEMO_LOG("Value of Array: %s", readarr);
+        //QL_SPI_DEMO_LOG("Value of Array: %s", readarr);
         
-        for(int i = 0; i < 256; i++){
+      for(int i = 0; i < 256; i++){
             QL_SPI_DEMO_LOG("%d: %c", readptr + i, readarr[i]);
             ql_rtos_task_sleep_ms(10);
-        }  
+        } 
         
+        QL_SPI_DEMO_LOG("Starting of Read %d", readptr);
         readptr -= 256; 
         
         free(outdata);
@@ -284,14 +306,21 @@ static void ql_spi_demo_task_pthread(void *ctx){
     ql_rtos_task_sleep_s(5);
     QL_SPI_DEMO_LOG("Starting Read Write");
 
+    dataarr = (unsigned char*)malloc(260);
+    *dataarr = 0x02;
+
+    change_address(dataarr, writeptr);
+    sector_erase(0);
+   
     for(int i = 0; i < 2; i++){
-        page_program(writeptr, packet1);
+        write_array(packet1);
         ql_rtos_task_sleep_s(3);
-        QL_SPI_DEMO_LOG("Packet 1 Loop %d done", i);
-        page_program(writeptr, packet2);
-        QL_SPI_DEMO_LOG("Packet 2 Loop %d done", i);
+        QL_SPI_DEMO_LOG("Packet 1 Loop %d done");
+        write_array(packet2);
+        QL_SPI_DEMO_LOG("Packet 2 Loop %d done");
         ql_rtos_task_sleep_s(3);
     }
+    page_program();
     read_page(3);
 
     ql_rtos_task_sleep_s(5);
@@ -308,7 +337,7 @@ static void ql_spi_demo_task_pthread(void *ctx){
 
 QlOSStatus ql_spi_demo_init(void)
 {	
-    ql_rtos_task_sleep_s(30);
+    ql_rtos_task_sleep_s(20);
     QL_SPI_DEMO_LOG("Entering Main Code");
 	QlOSStatus err = QL_OSI_SUCCESS;
 	err = ql_rtos_task_create(&spi_demo_task, SPI_DEMO_TASK_STACK_SIZE, SPI_DEMO_TASK_PRIO, "ql_spi_demo", ql_spi_demo_task_pthread, NULL, SPI_DEMO_TASK_EVENT_CNT);
